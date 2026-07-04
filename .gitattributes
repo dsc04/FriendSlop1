@@ -55,6 +55,8 @@
 *.mb     filter=lfs diff=lfs merge=lfs -text
 *.ma     filter=lfs diff=lfs merge=lfs -text
 *.abc    filter=lfs diff=lfs merge=lfs -text
+*.glb    filter=lfs diff=lfs merge=lfs -text
+*.gltf   filter=lfs diff=lfs merge=lfs -text
 
 ## --- Images / textures ---
 *.png    filter=lfs diff=lfs merge=lfs -text
