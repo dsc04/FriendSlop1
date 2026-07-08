@@ -19,6 +19,10 @@ public static class FoundationSceneBuilder
     [MenuItem("Tools/FriendSlop/Build Foundation Scene")]
     public static void Build()
     {
+        // Don't blow away unsaved work — offer to save open scenes first (Cancel aborts).
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+            return;
+
         Directory.CreateDirectory(SceneDir);
         Directory.CreateDirectory(MatDir);
 
