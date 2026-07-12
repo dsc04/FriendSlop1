@@ -4,6 +4,8 @@ using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Playables;
+using UnityEngine.InputSystem;
 
 // One-click starter scene.
 // In Unity's TOP MENU:  Tools ▸ FriendSlop ▸ Build Foundation Scene
@@ -15,6 +17,8 @@ public static class FoundationSceneBuilder
     const string SceneDir  = "Assets/_Project/Scenes";
     const string ScenePath = SceneDir + "/Main.unity";
     const string MatDir    = "Assets/_Project/Materials";
+
+    const string InputActionsAssetName = "PlayerMovementAction";
 
     [MenuItem("Tools/FriendSlop/Build Foundation Scene")]
     public static void Build()
@@ -47,24 +51,43 @@ public static class FoundationSceneBuilder
         spawn.transform.position = Vector3.zero;
 
         // --- Player ---
-        var player = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        const float capsuleHeight = 2f;
+        const float capsuleRadius = 0.5f;
+
+        var player = new GameObject("Player");
         player.name = "Player";
         player.tag = "Player";
-        Object.DestroyImmediate(player.GetComponent<CapsuleCollider>()); // CharacterController does the collision
-        player.transform.position = new Vector3(0f, 1.1f, 0f);
-        player.GetComponent<Renderer>().sharedMaterial = MakeMaterial("PlayerMat", new Color(0.90f, 0.42f, 0.30f));
+        player.transform.position = new Vector3(0f, capsuleHeight * 0.5f, 0f);
         var cc = player.AddComponent<CharacterController>();
-        cc.height = 2f; cc.radius = 0.5f; cc.center = Vector3.zero;
-        player.AddComponent<PlayerController>();
+        cc.height = capsuleHeight;
+        cc.radius = capsuleRadius;
+        cc.center = Vector3.zero;
+        var playerController = player.AddComponent<PlayerController>();
+
+        // --- Capsule to Player --- 
+        var capsule = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        capsule.name = "PlayerBody";
+        Object.DestroyImmediate(capsule.GetComponent<CapsuleCollider>());
+        capsule.transform.SetParent(player.transform);
+        capsule.transform.localPosition = Vector3.zero;
+        capsule.GetComponent<Renderer>().sharedMaterial = MakeMaterial("PlayerMat", new Color(0.90f, 0.42f, 0.30f));
 
         // --- Camera ---
         var camGo = new GameObject("Main Camera");
         camGo.tag = "MainCamera";
-        camGo.AddComponent<Camera>();
+        var cam = camGo.AddComponent<Camera>();
         camGo.AddComponent<AudioListener>();
-        camGo.transform.position = new Vector3(0f, 6f, -8f);
-        camGo.transform.rotation = Quaternion.Euler(30f, 0f, 0f);
-        camGo.AddComponent<CameraFollow>().target = player.transform;
+        camGo.transform.SetParent(player.transform);
+        camGo.transform.localPosition = new Vector3(0f, capsuleHeight * 0.4f, 0f);
+        camGo.transform.localRotation = Quaternion.identity;
+
+        // --- Player Input Handler ---
+        var inputGo = new GameObject("PlayerInputHandler");
+        var inputHandler = inputGo.AddComponent<PlayerInputHandler>();
+
+        // --- Bind private SerializeField references to PlayerController ---
+        WireReferences(playerController, cc, cam, inputHandler);
+        WireInputActionAsset(inputHandler);
 
         // --- Save + register in Build Settings ---
         EditorSceneManager.SaveScene(scene, ScenePath);
@@ -99,5 +122,53 @@ public static class FoundationSceneBuilder
             scenes.Insert(0, new EditorBuildSettingsScene(path, true));
         EditorBuildSettings.scenes = scenes.ToArray();
     }
+
+    static void WireReferences(PlayerController controller, CharacterController cc, Camera cam, PlayerInputHandler input)
+    {
+        var so = new SerializedObject(controller);
+ 
+        SetIfExists(so, "characterController", cc);
+        SetIfExists(so, "mainCamera", cam);
+        SetIfExists(so, "playerInputHandler", input);
+ 
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
+ 
+    static void SetIfExists(SerializedObject so, string propertyName, Object value)
+    {
+        var prop = so.FindProperty(propertyName);
+        if (prop == null)
+        {
+            Debug.LogWarning($"[FriendSlop] Поле '{propertyName}' не найдено на PlayerController — " +
+                              $"проверьте, что имя поля не поменялось.");
+            return;
+        }
+        prop.objectReferenceValue = value;
+    }
+
+        static void WireInputActionAsset(PlayerInputHandler inputHandler)
+    {
+        string[] guids = AssetDatabase.FindAssets($"{InputActionsAssetName} t:InputActionAsset");
+        if (guids.Length == 0)
+        {
+            Debug.LogWarning($"[FriendSlop] Input Action Asset '{InputActionsAssetName}' не найден в проекте — " +
+                              $"привяжите его на PlayerInputHandler вручную, либо проверьте имя (константа InputActionsAssetName).");
+            return;
+        }
+        if (guids.Length > 1)
+        {
+            Debug.LogWarning($"[FriendSlop] Найдено несколько ассетов с именем '{InputActionsAssetName}' — " +
+                              $"берём первый найденный, проверьте вручную, тот ли это файл.");
+        }
+ 
+        string path = AssetDatabase.GUIDToAssetPath(guids[0]);
+        var asset = AssetDatabase.LoadAssetAtPath<InputActionAsset>(path);
+ 
+        var so = new SerializedObject(inputHandler);
+        SetIfExists(so, "playerControls", asset);
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
+
+
 }
 #endif
