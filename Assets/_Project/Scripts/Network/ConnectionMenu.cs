@@ -40,6 +40,18 @@ public class ConnectionMenu : MonoBehaviour
             NetworkManager.Singleton.OnClientDisconnectCallback += OnClientDisconnect;
     }
 
+    void Update()
+    {
+        // The first-person controller locks the mouse cursor while you play.
+        // Esc frees it so this menu stays clickable (Leave room, Copy code…).
+        var kb = UnityEngine.InputSystem.Keyboard.current;
+        if (kb != null && kb.escapeKey.wasPressedThisFrame)
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+        }
+    }
+
     void OnDestroy()
     {
         if (NetworkManager.Singleton != null)

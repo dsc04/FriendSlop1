@@ -5,17 +5,20 @@ using Unity.Netcode.Transports.UTP;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 // One-click multiplayer wiring.
 // In Unity's TOP MENU:  Tools ▸ FriendSlop ▸ Set Up Multiplayer Scene
 //
 // Takes the foundation scene (Main.unity) and makes it network-ready:
-//   1. Turns the player into a prefab at Assets/_Project/Prefabs/Player.prefab
-//      (capsule + CharacterController + PlayerController + the network pieces).
-//   2. Removes the hand-placed Player from the scene — from now on the
-//      NetworkManager spawns one player per person who connects.
-//   3. Adds a NetworkManager (+ Unity Transport) with that prefab assigned.
-//   4. Adds the ConnectionMenu (the HOST / JOIN screen).
+//   1. Builds Assets/_Project/Prefabs/Player.prefab — the same first-person player
+//      FoundationSceneBuilder creates (body, camera, input handler, wired refs),
+//      plus the network pieces on top.
+//   2. Removes the hand-placed Player and PlayerInputHandler from the scene —
+//      from now on the NetworkManager spawns one player per person who connects.
+//   3. Adds a MenuCamera so you can see the world before hosting/joining.
+//   4. Adds a NetworkManager (+ Unity Transport) with the player prefab assigned.
+//   5. Adds the ConnectionMenu (the HOST / JOIN screen).
 //
 // Safe to run again after pulling changes — it rebuilds the prefab and reuses
 // the scene objects instead of duplicating them.
@@ -25,6 +28,9 @@ public static class MultiplayerSceneSetup
     const string PrefabDir     = "Assets/_Project/Prefabs";
     const string PrefabPath    = PrefabDir + "/Player.prefab";
     const string PlayerMatPath = "Assets/_Project/Materials/PlayerMat.mat";
+
+    // Must match the asset FoundationSceneBuilder looks for.
+    const string InputActionsAssetName = "PlayerMovementAction";
 
     [MenuItem("Tools/FriendSlop/Set Up Multiplayer Scene")]
     public static void Setup()
@@ -43,9 +49,22 @@ public static class MultiplayerSceneSetup
 
         var playerPrefab = BuildPlayerPrefab();
 
-        // The scene must not contain a hand-placed player — the network spawns them.
+        // The hand-placed player pieces go away — the network spawns players now.
         var scenePlayer = GameObject.Find("Player");
-        if (scenePlayer != null) Object.DestroyImmediate(scenePlayer);
+        if (scenePlayer != null) Object.DestroyImmediate(scenePlayer);      // its child camera goes with it
+        var sceneInput = GameObject.Find("PlayerInputHandler");
+        if (sceneInput != null) Object.DestroyImmediate(sceneInput);        // the input handler lives on the prefab now
+
+        // --- Menu camera (shows the world until your player spawns) ---
+        var menuCam = GameObject.Find("MenuCamera");
+        if (menuCam == null)
+        {
+            menuCam = new GameObject("MenuCamera");
+            menuCam.AddComponent<Camera>();
+            menuCam.AddComponent<AudioListener>();
+            menuCam.transform.position = new Vector3(0f, 6f, -8f);
+            menuCam.transform.rotation = Quaternion.Euler(30f, 0f, 0f);
+        }
 
         // --- NetworkManager + transport ---
         var nmGo = GameObject.Find("NetworkManager");
@@ -73,40 +92,100 @@ public static class MultiplayerSceneSetup
         EditorUtility.DisplayDialog("FriendSlop",
             "Multiplayer is wired up ✅\n\n" +
             "Press Play → click HOST a room → a short code appears.\n" +
-            "A friend presses Play in their copy, types the code, clicks JOIN.\n\n" +
+            "A friend presses Play in their copy, types the code, clicks JOIN.\n" +
+            "(Esc frees the mouse cursor while playing.)\n\n" +
             "To test alone first: Window ▸ Multiplayer ▸ Multiplayer Play Mode →\n" +
             "enable Player 2 → Play. Host in one window, join from the other.\n\n" +
             "(Needs the project linked in Edit ▸ Project Settings ▸ Services.)",
             "Let's go");
     }
 
-    // Build the networked player prefab from scratch (idempotent — same result every run).
+    // Builds the networked player prefab from scratch (idempotent — same result every
+    // run). Mirrors the player that FoundationSceneBuilder creates, then adds the
+    // network pieces. Camera / AudioListener / PlayerInputHandler are saved DISABLED:
+    // NetworkPlayerSetup switches them on only for the player YOU own.
     static GameObject BuildPlayerPrefab()
     {
         Directory.CreateDirectory(PrefabDir);
 
-        var temp = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        temp.name = "Player";
-        temp.tag = "Player";
-        Object.DestroyImmediate(temp.GetComponent<CapsuleCollider>()); // CharacterController does the collision
-        temp.transform.position = new Vector3(0f, 1.1f, 0f);
+        const float capsuleHeight = 2f;
+        const float capsuleRadius = 0.5f;
 
+        var root = new GameObject("Player");
+        root.tag = "Player";
+        root.transform.position = new Vector3(0f, capsuleHeight * 0.5f, 0f);
+        var cc = root.AddComponent<CharacterController>();
+        cc.height = capsuleHeight;
+        cc.radius = capsuleRadius;
+        cc.center = Vector3.zero;
+        var controller = root.AddComponent<PlayerController>();
+        var input = root.AddComponent<PlayerInputHandler>();
+        input.enabled = false;   // owner-only (see NetworkPlayerSetup)
+
+        // Visible body.
+        var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        body.name = "PlayerBody";
+        Object.DestroyImmediate(body.GetComponent<CapsuleCollider>()); // CharacterController does the collision
+        body.transform.SetParent(root.transform);
+        body.transform.localPosition = Vector3.zero;
         var mat = AssetDatabase.LoadAssetAtPath<Material>(PlayerMatPath);
-        if (mat != null) temp.GetComponent<Renderer>().sharedMaterial = mat;
+        if (mat != null) body.GetComponent<Renderer>().sharedMaterial = mat;
 
-        var cc = temp.AddComponent<CharacterController>();
-        cc.height = 2f; cc.radius = 0.5f; cc.center = Vector3.zero;
+        // First-person camera (child, pitches up/down; the body turns left/right).
+        var camGo = new GameObject("Main Camera");
+        camGo.tag = "MainCamera";
+        var cam = camGo.AddComponent<Camera>();
+        var ears = camGo.AddComponent<AudioListener>();
+        cam.enabled = false;    // owner-only
+        ears.enabled = false;   // owner-only
+        camGo.transform.SetParent(root.transform);
+        camGo.transform.localPosition = new Vector3(0f, capsuleHeight * 0.4f, 0f);
+        camGo.transform.localRotation = Quaternion.identity;
 
-        temp.AddComponent<PlayerController>();
+        // Same inspector references FoundationSceneBuilder wires up.
+        var so = new SerializedObject(controller);
+        SetIfExists(so, "characterController", cc);
+        SetIfExists(so, "mainCamera", cam);
+        SetIfExists(so, "playerInputHandler", input);
+        so.ApplyModifiedPropertiesWithoutUndo();
+        WireInputActionAsset(input);
 
         // The network pieces:
-        temp.AddComponent<NetworkObject>();          // makes it a networked thing at all
-        temp.AddComponent<ClientNetworkTransform>(); // syncs position/rotation, owner drives
-        temp.AddComponent<NetworkPlayerSetup>();     // owner-only controls + camera + spawn spot
+        root.AddComponent<NetworkObject>();          // makes it a networked thing at all
+        root.AddComponent<ClientNetworkTransform>(); // syncs position/rotation, owner drives
+        root.AddComponent<NetworkPlayerSetup>();     // owner-only wake-up + spawn spot
 
-        var prefab = PrefabUtility.SaveAsPrefabAsset(temp, PrefabPath);
-        Object.DestroyImmediate(temp);
+        var prefab = PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+        Object.DestroyImmediate(root);
         return prefab;
+    }
+
+    static void SetIfExists(SerializedObject so, string propertyName, Object value)
+    {
+        var prop = so.FindProperty(propertyName);
+        if (prop == null)
+        {
+            Debug.LogWarning($"[FriendSlop] Field '{propertyName}' not found on {so.targetObject.GetType().Name} — " +
+                             "did it get renamed? Wire it on the Player prefab by hand.");
+            return;
+        }
+        prop.objectReferenceValue = value;
+    }
+
+    static void WireInputActionAsset(PlayerInputHandler inputHandler)
+    {
+        string[] guids = AssetDatabase.FindAssets($"{InputActionsAssetName} t:InputActionAsset");
+        if (guids.Length == 0)
+        {
+            Debug.LogWarning($"[FriendSlop] Input Action Asset '{InputActionsAssetName}' not found — " +
+                             "assign it on the Player prefab's PlayerInputHandler by hand.");
+            return;
+        }
+
+        var asset = AssetDatabase.LoadAssetAtPath<InputActionAsset>(AssetDatabase.GUIDToAssetPath(guids[0]));
+        var so = new SerializedObject(inputHandler);
+        SetIfExists(so, "playerControls", asset);
+        so.ApplyModifiedPropertiesWithoutUndo();
     }
 
     // Netcode requires every spawnable prefab to be on a NetworkPrefabsList that the

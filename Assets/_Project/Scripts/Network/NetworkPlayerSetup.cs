@@ -1,30 +1,46 @@
 using Unity.Netcode;
 using UnityEngine;
 
-// Lives on the Player prefab, next to PlayerController.
+// Lives on the Player prefab root, next to PlayerController.
 //
 // When a player spawns in a networked game, EVERY connected computer gets a copy
-// of that player. This script makes sure each copy behaves correctly:
-//   - your OWN player  → controls on, camera follows it
-//   - everyone else's  → controls OFF (their position arrives over the network
-//                        via ClientNetworkTransform, we never simulate them here)
+// of that player. This script makes each copy behave correctly:
+//   - your OWN player  → controls + input + first-person camera ON, and the
+//                        scene's MenuCamera switches off
+//   - everyone else's  → stays "display only": position/rotation arrive over the
+//                        network via ClientNetworkTransform, nothing simulates here
 //
-// ➜ FIRST-PERSON REWRITE (note for whoever owns the character): PlayerController
-//   is NOT modified by multiplayer — this script simply enables/disables it.
-//   If you rename the class or add extra control/camera scripts, update the two
-//   marked spots below. Everything else can stay as is.
+// On the prefab, PlayerInputHandler / Camera / AudioListener are saved DISABLED
+// and are only switched ON for the owner. We never disable a remote copy's
+// PlayerInputHandler at runtime: all copies share one InputActionAsset, so its
+// OnDisable would switch off input for the whole game — including yours.
+//
+// ➜ FIRST-PERSON CHARACTER (note for its author): PlayerController and
+//   PlayerInputHandler are NOT modified by multiplayer — this script only
+//   enables/disables them. If you rename classes or add control scripts,
+//   update the lookups below.
 public class NetworkPlayerSetup : NetworkBehaviour
 {
     [Tooltip("How far from the center players appear when they join.")]
     public float spawnRingRadius = 2.5f;
 
+    GameObject _menuCamera;   // scene camera shown before you host/join
+
     public override void OnNetworkSpawn()
     {
-        // ➜ Control scripts live only on YOUR player. (Rename/add here if needed.)
+        // Simulation runs only on YOUR player.
         var controller = GetComponent<PlayerController>();
         if (controller != null) controller.enabled = IsOwner;
 
-        if (!IsOwner) return;
+        if (!IsOwner) return;   // remote copies keep their prefab-default (off) state
+
+        // Wake up the pieces that are disabled on the prefab (see note above).
+        var input = GetComponent<PlayerInputHandler>();
+        if (input != null) input.enabled = true;
+        var cam = GetComponentInChildren<Camera>(true);
+        if (cam != null) cam.enabled = true;
+        var ears = GetComponentInChildren<AudioListener>(true);
+        if (ears != null) ears.enabled = true;
 
         // Spread players around a small circle so they don't spawn inside each other.
         // (CharacterController blocks direct teleports, so switch it off for a moment.)
@@ -32,11 +48,21 @@ public class NetworkPlayerSetup : NetworkBehaviour
         var cc = GetComponent<CharacterController>();
         if (cc != null) cc.enabled = false;
         transform.position = new Vector3(
-            Mathf.Sin(angle) * spawnRingRadius, 1.1f, Mathf.Cos(angle) * spawnRingRadius);
+            Mathf.Sin(angle) * spawnRingRadius, 1f, Mathf.Cos(angle) * spawnRingRadius);
         if (cc != null) cc.enabled = true;
 
-        // ➜ Camera follows only YOUR player. (Swap this when the FP camera lands.)
-        var cam = FindFirstObjectByType<CameraFollow>();
-        if (cam != null) cam.target = transform;
+        // First-person camera took over — the menu camera can rest.
+        _menuCamera = GameObject.Find("MenuCamera");
+        if (_menuCamera != null) _menuCamera.SetActive(false);
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        if (!IsOwner) return;
+
+        // Back to the menu: scene camera on, cursor usable again.
+        if (_menuCamera != null) _menuCamera.SetActive(true);
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
     }
 }
